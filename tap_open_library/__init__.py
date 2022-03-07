@@ -6,6 +6,7 @@ from singer import utils, metadata
 from singer.catalog import Catalog, CatalogEntry
 from singer.schema import Schema
 from .tap_open_library import get_recent_changes
+from singer.transform import transform
 
 
 REQUIRED_CONFIG_KEYS = ["change_date", "kind"]
@@ -58,13 +59,14 @@ def sync(config, state, catalog):
     # Loop over selected streams in catalog
     for stream in catalog.get_selected_streams(state):
         LOGGER.info("Syncing stream:" + stream.tap_stream_id)
-
+        mdata = metadata.to_map(stream.metadata)
         bookmark_column = stream.replication_key
-        is_sorted = False
 
+        is_sorted = False
+        schema = stream.schema.to_dict()
         singer.write_schema(
             stream_name=stream.tap_stream_id,
-            schema=stream.schema.to_dict(),
+            schema=schema,
             key_properties=stream.key_properties,
         )
 
@@ -72,17 +74,16 @@ def sync(config, state, catalog):
 
         max_bookmark = None
         for row in tap_data:
-            # TODO: place type conversions or transformations here
-
+            transformed_data = transform(row, schema, metadata=mdata)
             # write one or more rows to the stream:
-            singer.write_records(stream.tap_stream_id, [row])
+            singer.write_records(stream.tap_stream_id, [transformed_data])
             if bookmark_column:
                 if is_sorted:
                     # update bookmark to latest value
-                    singer.write_state({stream.tap_stream_id: row[bookmark_column]})
+                    singer.write_state({stream.tap_stream_id: transformed_data[bookmark_column]})
                 else:
                     # if data unsorted, save max value until end of writes
-                    max_bookmark = max(max_bookmark, row[bookmark_column])
+                    max_bookmark = max(max_bookmark, transformed_data[bookmark_column])
         if bookmark_column and not is_sorted:
             singer.write_state({stream.tap_stream_id: max_bookmark})
     return
